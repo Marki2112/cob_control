@@ -10,6 +10,7 @@ find_package(catkin REQUIRED
   nav_msgs
   roscpp
   sensor_msgs
+  tf
 )
 
 find_package(Eigen3 REQUIRED)

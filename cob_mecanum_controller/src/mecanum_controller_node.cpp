@@ -19,6 +19,7 @@
 #include <nav_msgs/Odometry.h>
 #include <sensor_msgs/JointState.h>
 #include <ros/ros.h>
+#include <tf/transform_broadcaster.h>
 
 #include <exception>
 class MecanumControllerNode
@@ -50,9 +51,9 @@ public:
       throw std::runtime_error("At least one parameter is missing.");
     }
 
-    static_frame_ = "map";
+    static_frame_ = "base_footprint";
     pnh.getParam("static_frame", static_frame_);
-    odom_frame_ = "map";
+    odom_frame_ = "odom_combined";
     pnh.getParam("odom_frame", odom_frame_);
 
     controller_ = std::make_shared<cob_mecanum_controller::MecanumController>(lx, ly, r);
@@ -64,6 +65,7 @@ public:
 
     joint_state_sub_ =
         nh_.subscribe<sensor_msgs::JointState>("wheel_state", 1, &MecanumControllerNode::jointStateCallback, this);
+  
   }
 
 protected:
@@ -77,6 +79,22 @@ protected:
 
   std::string static_frame_;
   std::string odom_frame_;
+
+  // add new parameter for odometry
+  ros::Time current_time = ros::Time::now();
+  ros::Time last_time = ros::Time::now();
+  
+  double x = 0.0;
+  double y = 0.0;
+  double th = 0.0;
+  
+  double vx = 0.0;
+  double vy = 0.0;
+  double vth = 0.0;
+
+  // define broadcaster for tf between odom_combined and base_footprint
+  tf::TransformBroadcaster odom_broadcaster;
+  geometry_msgs::TransformStamped odom_trans;
 
   void twistCallback(const geometry_msgs::Twist msg)
   {
@@ -93,14 +111,55 @@ protected:
   {
     Eigen::Vector4d wheel_velocities(msg.velocity.data());
     Eigen::Vector3d twist = controller_->wheelToTwist(wheel_velocities);
-    nav_msgs::Odometry odom_msg;
-    odom_msg.header.frame_id = static_frame_;
-    odom_msg.child_frame_id = odom_frame_;
 
-    odom_msg.twist.twist.linear.x = twist.x();
-    odom_msg.twist.twist.linear.y = twist.y();
-    odom_msg.twist.twist.angular.z = twist.z();
+    // Calculation for the position 
+    current_time = ros::Time::now();
+
+    vx = twist.x();
+    vy = twist.y();
+    vth = twist.z();
+
+    double dt = (current_time - last_time).toSec();
+    double delta_x = (vx * cos(th) - vy * sin(th)) * dt;
+    double delta_y = (vx * sin(th) + vy * cos(th)) * dt;
+    double delta_th = vth * dt;
+    
+    x += delta_x;
+    y += delta_y;
+    th += delta_th;
+
+    // create a quaternion from yaw
+    geometry_msgs::Quaternion odom_quat = tf::createQuaternionMsgFromYaw(th);
+
+    //publish transform from odom to base_footprint
+    odom_trans.header.stamp = current_time;
+    odom_trans.header.frame_id = odom_frame_;
+    odom_trans.child_frame_id = static_frame_;
+
+    odom_trans.transform.translation.x = x;
+    odom_trans.transform.translation.y = y;
+    odom_trans.transform.translation.z = 0.0;
+    odom_trans.transform.rotation = odom_quat;
+
+    odom_broadcaster.sendTransform(odom_trans);
+
+    nav_msgs::Odometry odom_msg;
+    odom_msg.header.stamp = current_time;
+    odom_msg.header.frame_id = odom_frame_;
+    odom_msg.child_frame_id = static_frame_;
+
+    // publish the new position
+    odom_msg.pose.pose.position.x = x;
+    odom_msg.pose.pose.position.y = y;
+    odom_msg.pose.pose.position.z = 0.0;
+    odom_msg.pose.pose.orientation = odom_quat;
+
+    odom_msg.twist.twist.linear.x = vx;
+    odom_msg.twist.twist.linear.y = vy;
+    odom_msg.twist.twist.angular.z = vth;
     odom_pub_.publish(odom_msg);
+
+    last_time = current_time;
   }
 };
 
